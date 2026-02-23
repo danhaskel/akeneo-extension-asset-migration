@@ -3,10 +3,20 @@
   "name": "asset_migration",
   "type": "sdk_script",
   "file": "dist/app.js",
+  "credentials": [
+    {
+      "code": "pim_api",
+      "type": "Bearer Token",
+      "value": "NDFiYjk5NjA0ODliYWNlYTk2MTZhNWEwZmIzYjc1ZjU3ZTIzYzkzNDgxM2QyZTgxY2E5ODkzZjMzNThlMDhkYQ"
+    }
+  ],
   "configuration": {
     "default_label": "Asset Migration",
     "labels": {
       "en_US": "Asset Migration"
+    },
+    "custom_variables": {
+      "pim_host": "https://dan.support.cloud.akeneo.com"
     }
   }
 }

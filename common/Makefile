@@ -29,7 +29,6 @@ start:
 	_ensure_env_var CLIENT_SECRET "CLIENT_SECRET"; \
 	_ensure_env_var USERNAME "USERNAME"; \
 	_ensure_env_var PASSWORD "PASSWORD"; \
-	_ensure_env_var ZENDESK_BASE_URL "ZENDESK_BASE_URL"; \
 	echo "\nGenerating API token..."; \
 	$(MAKE) get-token; \
 	echo "\nCreating UI extension..."; \

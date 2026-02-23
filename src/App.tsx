@@ -1,75 +1,162 @@
-import './App.css';
+import { useEffect, useState } from 'react';
+import { Button, Helper, SectionTitle } from 'akeneo-design-system';
 
-import { useState } from 'react';
 import AttributeSelection, { SelectedAttribute } from './components/ui/attribute_selection';
+import AssetAttributeSelector from './components/ui/asset_attribute_selector';
+import MigrationProgress from './components/ui/migration_progress';
+import { useMigration } from './hooks/useMigration';
+
+const sourceSearch = {
+  type: [{ operator: 'IN', value: ['pim_catalog_image', 'pim_catalog_file'] }],
+};
+
+const destinationSearch = {
+  type: [{ operator: 'IN', value: ['pim_catalog_asset_collection'] }],
+};
 
 function App() {
   const [selectedSource, setSelectedSource] = useState<SelectedAttribute | null>(null);
   const [selectedDestination, setSelectedDestination] = useState<SelectedAttribute | null>(null);
+  const [assetFamilyCode, setAssetFamilyCode] = useState<string | null>(null);
+  const [isFetchingFamily, setIsFetchingFamily] = useState(false);
+  const [selectedMediaAttribute, setSelectedMediaAttribute] = useState<string | null>(null);
 
-  const sourceSearch = {
-    type: [
-      {
-        operator: "IN",
-        value: ["pim_catalog_image", "pim_catalog_file"]
-      }
-    ]
+  const { state: migrationState, preview, run, reset } = useMigration();
+
+  // Resolve the asset family code from the destination attribute's referenceDataName
+  useEffect(() => {
+    setAssetFamilyCode(null);
+    setSelectedMediaAttribute(null);
+    if (!selectedDestination?.code) return;
+
+    setIsFetchingFamily(true);
+    PIM.api.attribute_v1
+      .get({ code: selectedDestination.code })
+      .then(attr => setAssetFamilyCode(attr.referenceDataName ?? null))
+      .catch(() => setAssetFamilyCode(null))
+      .finally(() => setIsFetchingFamily(false));
+  }, [selectedDestination?.code]);
+
+  // Reset migration state whenever the configuration changes
+  useEffect(() => {
+    if (migrationState.status !== 'idle') reset();
+  }, [
+    selectedSource?.code,
+    selectedSource?.locale,
+    selectedSource?.scope,
+    selectedDestination?.code,
+    selectedMediaAttribute,
+  ]);
+
+  const canPreview =
+    !!selectedSource?.code && !!selectedDestination?.code && !!selectedMediaAttribute;
+  const canMigrate = canPreview && migrationState.status === 'ready';
+  const isBusy =
+    migrationState.status === 'previewing' || migrationState.status === 'migrating';
+
+  const handlePreview = () => {
+    if (!selectedSource || !selectedDestination) return;
+    preview(selectedSource, selectedDestination);
   };
 
-  const destinationSearch = {
-    type: [
-      {
-        operator: "IN",
-        value: ["pim_catalog_asset_collection"]
-      }
-    ]
+  const handleMigrate = () => {
+    if (!selectedSource || !selectedDestination || !assetFamilyCode || !selectedMediaAttribute)
+      return;
+    run(selectedSource, selectedDestination, assetFamilyCode, selectedMediaAttribute);
   };
 
   return (
-    <div className="p-4 space-y-4">
-      <h1 className="text-2xl font-bold mb-4">Asset Migration</h1>
-      
-      <div className="max-w-md space-y-4">
-        <div>
-          <label className="block text-sm font-medium mb-1 font-semibold">Source Attribute</label>
-          <AttributeSelection 
+    <div className="p-6">
+      <SectionTitle sticky={0}>
+        <SectionTitle.Title>Asset Migration</SectionTitle.Title>
+      </SectionTitle>
+
+      <div className="mt-4">
+        <Helper level="info">
+          This tool migrates image or file attribute values to assets linked via an asset collection
+          attribute. For a product to be migrated, it must belong to a family that includes{' '}
+          <strong>both</strong> the selected source attribute and the selected destination asset
+          collection attribute.
+        </Helper>
+      </div>
+
+      {/* Source and Destination side by side */}
+      <div className="grid grid-cols-2 gap-8 mt-6">
+        {/* Source */}
+        <div className="space-y-3">
+          <SectionTitle>
+            <SectionTitle.Title>Source</SectionTitle.Title>
+          </SectionTitle>
+          <Helper level="info">
+            Select the image or file attribute to migrate from. Choose a locale and channel if the
+            attribute requires them.
+          </Helper>
+          <AttributeSelection
             value={selectedSource}
             search={sourceSearch}
             placeholder="Select source attribute"
-            onChange={(value) => {
-              console.log('Selected source:', value);
-              setSelectedSource(value);
-            }} 
+            onChange={setSelectedSource}
           />
         </div>
 
-        <div>
-          <label className="block text-sm font-medium mb-1 font-semibold">Destination Attribute</label>
-          <AttributeSelection 
+        {/* Destination */}
+        <div className="space-y-3">
+          <SectionTitle>
+            <SectionTitle.Title>Destination</SectionTitle.Title>
+          </SectionTitle>
+          <Helper level="info">
+            Select the asset collection attribute to migrate into, then choose which media file
+            attribute within its asset family will store the file reference.
+          </Helper>
+          <AttributeSelection
             value={selectedDestination}
             search={destinationSearch}
-            placeholder="Select destination attribute"
-            onChange={(value) => {
-              console.log('Selected destination:', value);
-              setSelectedDestination(value);
-            }} 
+            placeholder="Select destination asset collection"
+            onChange={setSelectedDestination}
           />
-        </div>
-        
-        <div className="mt-8 p-4 bg-gray-50 rounded-lg border border-gray-200">
-          <h2 className="text-lg font-bold mb-2">Selection Summary</h2>
-          <div className="space-y-1 text-sm">
-            <p><span className="font-semibold">Source:</span> {selectedSource?.code || 'None'} 
-              {selectedSource?.locale && ` (${selectedSource.locale})`}
-              {selectedSource?.scope && ` [${selectedSource.scope}]`}
-            </p>
-            <p><span className="font-semibold">Destination:</span> {selectedDestination?.code || 'None'}
-              {selectedDestination?.locale && ` (${selectedDestination.locale})`}
-              {selectedDestination?.scope && ` [${selectedDestination.scope}]`}
-            </p>
-          </div>
+          {selectedDestination && (
+            <AssetAttributeSelector
+              assetFamilyCode={assetFamilyCode}
+              value={selectedMediaAttribute}
+              onChange={setSelectedMediaAttribute}
+            />
+          )}
+          {selectedDestination && !isFetchingFamily && assetFamilyCode === null && (
+            <Helper level="warning">
+              This attribute has no linked asset family. Please select a valid asset collection
+              attribute.
+            </Helper>
+          )}
         </div>
       </div>
+
+      {/* Actions */}
+      <div className="mt-6 flex flex-wrap items-center gap-4">
+        <Button
+          level="primary"
+          disabled={!canPreview || isBusy}
+          onClick={handlePreview}
+        >
+          {migrationState.status === 'previewing' ? 'Counting...' : 'Preview'}
+        </Button>
+
+        {migrationState.status === 'ready' && (
+          <>
+            <Helper level="info" inline>
+              {migrationState.totalProducts === 0
+                ? 'No products found with this source attribute set.'
+                : `${migrationState.totalProducts} product${migrationState.totalProducts === 1 ? '' : 's'} will be migrated.`}
+            </Helper>
+            {migrationState.totalProducts > 0 && (
+              <Button level="warning" disabled={!canMigrate || isBusy} onClick={handleMigrate}>
+                Start Migration
+              </Button>
+            )}
+          </>
+        )}
+      </div>
+
+      <MigrationProgress state={migrationState} onReset={reset} />
     </div>
   );
 }

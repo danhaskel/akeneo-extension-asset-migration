@@ -26,8 +26,7 @@
       "@/*": [
         "./src/*"
       ]
-    },
-    "types": ["vite/client"]
+    }
   },
   "include": ["src", "common/global.d.ts"]
 }

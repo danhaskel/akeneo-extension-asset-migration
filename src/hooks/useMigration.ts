@@ -1,5 +1,6 @@
 import { useCallback, useState } from 'react';
 import { SelectedAttribute } from '../components/ui/attribute_selection';
+import { SelectedAssetAttribute } from '../components/ui/asset_attribute_selector';
 
 interface PimProductValue { locale?: string; scope?: string; data: any; }
 interface PimProduct {
@@ -10,6 +11,8 @@ interface PimProduct {
 export interface AssetSourceContext {
   sourceAssetFamilyCode: string;
   sourceMediaAttrCode: string;
+  sourceMediaLocale?: string | null;
+  sourceMediaScope?: string | null;
   isSameFamily?: boolean;
 }
 
@@ -48,6 +51,54 @@ function describeValue(v: unknown): string {
   if (v === undefined) return 'undefined';
   if (typeof v === 'string') return `string(len=${v.length}): ${JSON.stringify(v.substring(0, 80))}`;
   try { return typeof v + ': ' + JSON.stringify(v).substring(0, 200); } catch { return String(v); }
+}
+
+/**
+ * Pure-JS SHA-1 for sandboxed iframes where crypto.subtle is unavailable (null origin).
+ * Implements FIPS 180-4 SHA-1.
+ */
+function sha1Sync(buffer: ArrayBuffer): string {
+  const data = new Uint8Array(buffer);
+  const len = data.length;
+  const padded = new Uint8Array(Math.ceil((len + 9) / 64) * 64);
+  padded.set(data);
+  padded[len] = 0x80;
+  const view = new DataView(padded.buffer);
+  view.setUint32(padded.length - 4, (len * 8) >>> 0, false);
+
+  let h0 = 0x67452301, h1 = 0xEFCDAB89, h2 = 0x98BADCFE,
+      h3 = 0x10325476, h4 = 0xC3D2E1F0;
+  const w = new Uint32Array(80);
+
+  for (let off = 0; off < padded.length; off += 64) {
+    const blk = new DataView(padded.buffer, off, 64);
+    for (let i = 0; i < 16; i++) w[i] = blk.getUint32(i * 4, false);
+    for (let i = 16; i < 80; i++) {
+      const x = w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16];
+      w[i] = (x << 1) | (x >>> 31);
+    }
+    let a = h0, b = h1, c = h2, d = h3, e = h4;
+    for (let i = 0; i < 80; i++) {
+      let f: number, k: number;
+      if      (i < 20) { f = (b & c) | (~b & d);           k = 0x5A827999; }
+      else if (i < 40) { f = b ^ c ^ d;                    k = 0x6ED9EBA1; }
+      else if (i < 60) { f = (b & c) | (b & d) | (c & d); k = 0x8F1BBCDC; }
+      else             { f = b ^ c ^ d;                    k = 0xCA62C1D6; }
+      const t = (((a << 5) | (a >>> 27)) + f + e + k + w[i]) >>> 0;
+      e = d; d = c; c = (b << 30) | (b >>> 2); b = a; a = t;
+    }
+    h0 = (h0 + a) >>> 0; h1 = (h1 + b) >>> 0; h2 = (h2 + c) >>> 0;
+    h3 = (h3 + d) >>> 0; h4 = (h4 + e) >>> 0;
+  }
+  return [h0, h1, h2, h3, h4].map(n => n.toString(16).padStart(8, '0')).join('');
+}
+
+async function computeSha1(buffer: ArrayBuffer): Promise<string> {
+  if (typeof crypto !== 'undefined' && crypto.subtle) {
+    const h = await crypto.subtle.digest('SHA-1', buffer);
+    return Array.from(new Uint8Array(h)).map(b => b.toString(16).padStart(2, '0')).join('');
+  }
+  return sha1Sync(buffer);
 }
 
 /**
@@ -111,9 +162,8 @@ function buildSearch(
 async function upsertAsset(
   product: PimProduct,
   source: SelectedAttribute,
-  destination: SelectedAttribute,
   assetFamilyCode: string,
-  mediaAttrCode: string
+  mediaAttr: SelectedAssetAttribute
 ): Promise<string[]> {
   console.group(`[Migration:file] Product ${product.uuid}`);
 
@@ -132,9 +182,11 @@ async function upsertAsset(
   console.log('[1] Derived filename:', filename);
 
   // ── Step 2: download via external gateway proxy ────────────────────────────
+  // Must use external.call — product_media_file_v1.download() goes through the
+  // SDK's /sdk/api/ proxy which has CORS issues from the extension iframe.
   const pimHost = String(PIM.custom_variables['pim_host'] ?? '');
   const downloadUrl = `${pimHost}/api/rest/v1/media-files/${filePath}/download`;
-  console.log('[2] Calling external.call — method: GET, url:', downloadUrl, '| credentials_code: pim_api');
+  console.log('[2] Calling external.call — GET', downloadUrl);
 
   let raw: unknown;
   try {
@@ -151,79 +203,49 @@ async function upsertAsset(
     throw downloadErr;
   }
 
-  // external.call returns Promise<any>; normalise to Blob for the upload step.
-  // Log what we received so we can diagnose unexpected formats.
   const blob: Blob = raw instanceof Blob
     ? raw
     : new Blob([raw instanceof ArrayBuffer ? raw : JSON.stringify(raw)]);
-  console.log('[2] Blob created:', describeValue(blob));
+  console.log('[2] Blob:', describeValue(blob));
 
-  // ── Step 3: upload to asset media file storage via external gateway ──────────
-  // We use external.call (server-side proxy) instead of asset_media_file_v1.upload
-  // to avoid the CORS Access-Control-Expose-Headers issue that prevents reading
-  // the Asset-media-file-code response header from JavaScript.
-  // Binary data is base64-encoded so it survives intact through a JS string body.
-  const arrayBuffer = await blob.arrayBuffer();
-  const bytes = new Uint8Array(arrayBuffer);
-  let binaryStr = '';
-  const CHUNK = 32768; // avoid spread stack overflow on large files
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    binaryStr += String.fromCharCode(...(bytes.subarray(i, Math.min(i + CHUNK, bytes.length)) as any));
-  }
-  const base64Data = btoa(binaryStr);
-  const mimeType = blob.type || 'application/octet-stream';
-  const boundary = `----AkeneoMigration${Date.now()}`;
-  const multipartBody =
-    `--${boundary}\r\n` +
-    `Content-Disposition: form-data; name="file"; filename="${filename}"\r\n` +
-    `Content-Type: ${mimeType}\r\n` +
-    `Content-Transfer-Encoding: base64\r\n` +
-    `\r\n` +
-    base64Data +
-    `\r\n--${boundary}--`;
+  // ── Step 3: upload to asset media file storage ────────────────────────────
+  // external.call cannot be used for uploads — the gateway forces Content-Type:
+  // application/json, which makes POST /api/rest/v1/asset-media-files reject with
+  // 400 "Invalid json message received". We use the SDK's upload() instead.
+  //
+  // CORS workaround for the response header: Akeneo generates storage paths via
+  // sha1_file() of the file content: {sha1[0]}/{sha1[1]}/{sha1[2]}/{sha1[3]}/{sha1}_{name}
+  // We compute the same SHA-1 client-side so we can derive the code even when
+  // CORS prevents reading the "Asset-media-file-code" response header.
+  const blobBuffer = await blob.arrayBuffer();
+  const sha1 = await computeSha1(blobBuffer);
+  const predictedCode = `${sha1[0]}/${sha1[1]}/${sha1[2]}/${sha1[3]}/${sha1}_${filename}`;
+  console.log('[3] SHA-1 predicted file code:', predictedCode);
 
-  const uploadUrl = `${pimHost}/api/rest/v1/asset-media-files`;
-  console.log('[3] Calling external.call for upload — url:', uploadUrl,
-    '| blob size:', blob.size, '| base64 length:', base64Data.length, '| mimeType:', mimeType);
+  console.log('[3] Calling asset_media_file_v1.upload — filename:', filename, '| blob:', describeValue(blob));
 
-  let uploadRaw: any;
+  let assetFileCode: string = predictedCode;
   try {
-    uploadRaw = await PIM.api.external.call({
-      method: 'POST',
-      url: uploadUrl,
-      headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` },
-      body: multipartBody,
-      credentials_code: 'pim_api',
-    });
-    console.log('[3] Upload external.call response:', describeValue(uploadRaw));
-    console.log('[3] Upload raw response (expand):', uploadRaw);
+    const uploadResult = await PIM.api.asset_media_file_v1.upload({ file: blob, filename });
+    assetFileCode = uploadResult.code;
+    console.log('[3] Upload success — SDK returned code:', assetFileCode);
+    if (assetFileCode !== predictedCode) {
+      console.warn('[3] Returned code differs from SHA-1 prediction — using returned code.',
+        'predicted:', predictedCode, '| actual:', assetFileCode);
+    } else {
+      console.log('[3] SHA-1 prediction matched returned code ✓');
+    }
   } catch (uploadErr: any) {
-    console.error('[3] Upload external.call FAILED:', uploadErr?.message ?? uploadErr);
-    console.groupEnd();
-    throw uploadErr;
+    if (/missing asset-media-file-code header/i.test(uploadErr?.message ?? '')) {
+      // Upload succeeded (HTTP 201) but CORS blocks reading the response header.
+      // Fall back to the SHA-1 derived code — Akeneo computes the same hash server-side.
+      console.warn('[3] CORS: Asset-media-file-code header unreadable. Using SHA-1 derived code:', assetFileCode);
+    } else {
+      console.error('[3] asset_media_file_v1.upload FAILED:', uploadErr?.message ?? uploadErr);
+      console.groupEnd();
+      throw uploadErr;
+    }
   }
-
-  // Extract the file code — try all plausible paths since response shape is unknown
-  const assetFileCode: string | null =
-    (uploadRaw && typeof uploadRaw === 'object')
-      ? (uploadRaw['asset-media-file-code']
-          ?? uploadRaw['Asset-media-file-code']
-          ?? uploadRaw?.headers?.['asset-media-file-code']
-          ?? uploadRaw?.headers?.['Asset-media-file-code']
-          ?? uploadRaw?.code
-          ?? null)
-      : null;
-
-  if (!assetFileCode) {
-    console.error('[3] Could not extract Asset-media-file-code from upload response.',
-      'Full response:', JSON.stringify(uploadRaw));
-    console.groupEnd();
-    throw new Error(
-      `Upload succeeded but Asset-media-file-code not found in external.call response. ` +
-      `Response: ${JSON.stringify(uploadRaw)}`
-    );
-  }
-  console.log('[3] Upload success — assetFileCode:', assetFileCode);
 
   // ── Step 4: upsert the asset record ───────────────────────────────────────
   const assetCode = generateAssetCode(filePath);
@@ -232,17 +254,17 @@ async function upsertAsset(
     asset: {
       code: assetCode,
       values: {
-        [mediaAttrCode]: [{
-          locale: destination.locale ?? null,
-          channel: destination.scope ?? null,
+        [mediaAttr.code]: [{
+          locale: mediaAttr.locale ?? null,
+          channel: mediaAttr.scope ?? null,
           data: assetFileCode,
         }],
       },
     },
   };
   console.log('[4] Calling asset_v1.upsert — family:', assetFamilyCode, '| assetCode:', assetCode,
-    '| mediaAttr:', mediaAttrCode, '| fileCode:', assetFileCode,
-    '| locale:', destination.locale ?? null, '| channel:', destination.scope ?? null);
+    '| mediaAttr:', mediaAttr.code, '| fileCode:', assetFileCode,
+    '| locale:', mediaAttr.locale ?? null, '| channel:', mediaAttr.scope ?? null);
 
   try {
     await PIM.api.asset_v1.upsert(assetPayload);
@@ -267,13 +289,15 @@ async function upsertAsset(
  * Phase 1 (asset_collection → asset_collection): look up each source asset to get
  * its media file code (already in asset storage — no download/re-upload needed),
  * then upsert a destination asset referencing that same file code.
+ *
+ * For same-family migrations the source and destination are in the same asset family,
+ * so we update the asset in place. No product patching is needed afterward.
  */
 async function upsertAssetsFromCollection(
   product: PimProduct,
   source: SelectedAttribute,
-  destination: SelectedAttribute,
   destFamilyCode: string,
-  destMediaAttrCode: string,
+  destMediaAttr: SelectedAssetAttribute,
   sourceContext: AssetSourceContext
 ): Promise<string[]> {
   console.group(`[Migration:asset-collection] Product ${product.uuid}`);
@@ -317,12 +341,23 @@ async function upsertAssetsFromCollection(
 
     const mediaValues: any[] = sourceAsset.values?.[sourceContext.sourceMediaAttrCode] ?? [];
     console.log(`[2] Media attr "${sourceContext.sourceMediaAttrCode}" values:`, JSON.stringify(mediaValues));
-    const assetFileCode: string | null = mediaValues[0]?.data ?? null;
+
+    // Find the value matching the source media attribute's locale/channel
+    const mediaMatch = mediaValues.find((v: any) => {
+      const localeOk = sourceContext.sourceMediaLocale
+        ? v.locale === sourceContext.sourceMediaLocale : v.locale == null;
+      const scopeOk = sourceContext.sourceMediaScope
+        ? v.channel === sourceContext.sourceMediaScope : v.channel == null;
+      return localeOk && scopeOk;
+    });
+    const assetFileCode: string | null = mediaMatch?.data ?? null;
     console.log('[2] Extracted assetFileCode:', assetFileCode);
 
     if (!assetFileCode) {
       const err = new Error(
         `Source asset "${sourceAssetCode}" has no media file value for attribute "${sourceContext.sourceMediaAttrCode}"`
+        + (sourceContext.sourceMediaLocale ? ` locale="${sourceContext.sourceMediaLocale}"` : '')
+        + (sourceContext.sourceMediaScope ? ` channel="${sourceContext.sourceMediaScope}"` : '')
       );
       console.error('[2]', err.message);
       console.groupEnd();
@@ -336,17 +371,17 @@ async function upsertAssetsFromCollection(
       asset: {
         code: destAssetCode,
         values: {
-          [destMediaAttrCode]: [{
-            locale: destination.locale ?? null,
-            channel: destination.scope ?? null,
+          [destMediaAttr.code]: [{
+            locale: destMediaAttr.locale ?? null,
+            channel: destMediaAttr.scope ?? null,
             data: assetFileCode,
           }],
         },
       },
     };
     console.log(`[3] Calling asset_v1.upsert — destFamily: ${destFamilyCode} | destCode: ${destAssetCode}`,
-      `| mediaAttr: ${destMediaAttrCode} | fileCode: ${assetFileCode}`,
-      `| locale: ${destination.locale ?? null} | channel: ${destination.scope ?? null}`);
+      `| mediaAttr: ${destMediaAttr.code} | fileCode: ${assetFileCode}`,
+      `| locale: ${destMediaAttr.locale ?? null} | channel: ${destMediaAttr.scope ?? null}`);
 
     try {
       await PIM.api.asset_v1.upsert(assetPayload);
@@ -431,7 +466,8 @@ export function useMigration() {
         page: 1,
         limit: 1,
         withCount: true,
-      });
+        attributes: source.code,
+      } as any);
       setState(s => ({ ...s, status: 'ready', totalProducts: result.count ?? 0 }));
     } catch (err) {
       console.error('Preview failed:', err);
@@ -443,14 +479,17 @@ export function useMigration() {
     source: SelectedAttribute,
     destination: SelectedAttribute,
     assetFamilyCode: string,
-    mediaAttrCode: string,
+    mediaAttr: SelectedAssetAttribute,
     sourceContext?: AssetSourceContext
   ) => {
     console.group('[Migration:run] Starting migration');
     console.log('Source:', source.code, '| locale:', source.locale ?? null, '| scope:', source.scope ?? null);
     console.log('Destination:', destination.code, '| locale:', destination.locale ?? null, '| scope:', destination.scope ?? null);
-    console.log('Dest family:', assetFamilyCode, '| mediaAttr:', mediaAttrCode);
-    console.log('Mode:', sourceContext ? `asset-collection (srcFamily=${sourceContext.sourceAssetFamilyCode}, srcMediaAttr=${sourceContext.sourceMediaAttrCode})` : 'file/image');
+    console.log('Dest family:', assetFamilyCode, '| mediaAttr:', mediaAttr.code,
+      '| mediaLocale:', mediaAttr.locale ?? null, '| mediaScope:', mediaAttr.scope ?? null);
+    console.log('Mode:', sourceContext
+      ? `asset-collection (srcFamily=${sourceContext.sourceAssetFamilyCode}, srcMediaAttr=${sourceContext.sourceMediaAttrCode}, sameFamily=${sourceContext.isSameFamily ?? false})`
+      : 'file/image');
 
     setState({
       status: 'migrating',
@@ -475,7 +514,8 @@ export function useMigration() {
         page,
         limit: BATCH_SIZE,
         withCount: page === 1,
-      });
+        attributes: `${source.code},${destination.code}`,
+      } as any);
 
       const items = result.items ?? [];
       console.log(`[Migration:run] Page ${page}: ${items.length} products${page === 1 ? ` (total count: ${result.count ?? 'unknown'})` : ''}`);
@@ -491,8 +531,8 @@ export function useMigration() {
       const assetResults = await Promise.allSettled(
         items.map(product =>
           sourceContext
-            ? upsertAssetsFromCollection(product, source, destination, assetFamilyCode, mediaAttrCode, sourceContext)
-            : upsertAsset(product, source, destination, assetFamilyCode, mediaAttrCode)
+            ? upsertAssetsFromCollection(product, source, assetFamilyCode, mediaAttr, sourceContext)
+            : upsertAsset(product, source, assetFamilyCode, mediaAttr)
         )
       );
 
@@ -500,31 +540,50 @@ export function useMigration() {
       const phase1Fail = assetResults.filter(r => r.status === 'rejected').length;
       console.log(`[Migration:run] Phase 1 done — ${phase1Success} ok, ${phase1Fail} failed`);
 
-      // Phase 2 — patch all products whose assets were created successfully
-      console.log(`[Migration:run] Phase 2 — patching products...`);
-      const patchResults = await Promise.allSettled(
-        items.map((product, i) => {
-          const assetResult = assetResults[i];
-          if (assetResult.status === 'rejected') {
-            return Promise.reject(assetResult.reason);
+      // Phase 2 — patch products to link asset codes to the destination attribute.
+      // Skipped for same-family migrations: the assets are updated in place and
+      // the product's collection already references them.
+      if (sourceContext?.isSameFamily) {
+        console.log('[Migration:run] Same-family migration — skipping Phase 2 (no product patching needed)');
+        assetResults.forEach((outcome, idx) => {
+          processedProducts++;
+          if (outcome.status === 'fulfilled') {
+            successCount++;
+          } else {
+            errorCount++;
+            const errMsg = outcome.reason instanceof Error
+              ? outcome.reason.message
+              : String(outcome.reason);
+            console.error(`[Migration:run] Product ${items[idx].uuid} FAILED:`, errMsg);
+            errors.push({ productUuid: items[idx].uuid, error: errMsg });
           }
-          return patchProduct(product, destination, assetResult.value);
-        })
-      );
+        });
+      } else {
+        console.log(`[Migration:run] Phase 2 — patching products...`);
+        const patchResults = await Promise.allSettled(
+          items.map((product, i) => {
+            const assetResult = assetResults[i];
+            if (assetResult.status === 'rejected') {
+              return Promise.reject(assetResult.reason);
+            }
+            return patchProduct(product, destination, assetResult.value);
+          })
+        );
 
-      patchResults.forEach((outcome, idx) => {
-        processedProducts++;
-        if (outcome.status === 'fulfilled') {
-          successCount++;
-        } else {
-          errorCount++;
-          const errMsg = outcome.reason instanceof Error
-            ? outcome.reason.message
-            : String(outcome.reason);
-          console.error(`[Migration:run] Product ${items[idx].uuid} FAILED:`, errMsg);
-          errors.push({ productUuid: items[idx].uuid, error: errMsg });
-        }
-      });
+        patchResults.forEach((outcome, idx) => {
+          processedProducts++;
+          if (outcome.status === 'fulfilled') {
+            successCount++;
+          } else {
+            errorCount++;
+            const errMsg = outcome.reason instanceof Error
+              ? outcome.reason.message
+              : String(outcome.reason);
+            console.error(`[Migration:run] Product ${items[idx].uuid} FAILED:`, errMsg);
+            errors.push({ productUuid: items[idx].uuid, error: errMsg });
+          }
+        });
+      }
 
       setState(s => ({
         ...s,

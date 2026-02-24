@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Button, Helper, SectionTitle } from 'akeneo-design-system';
 
 import AttributeSelection, { SelectedAttribute } from './components/ui/attribute_selection';
-import AssetAttributeSelector from './components/ui/asset_attribute_selector';
+import AssetAttributeSelector, { SelectedAssetAttribute } from './components/ui/asset_attribute_selector';
 import MigrationProgress from './components/ui/migration_progress';
 import { useMigration } from './hooks/useMigration';
 
@@ -22,12 +22,12 @@ function App() {
   const [sourceAttributeType, setSourceAttributeType] = useState<string | null>(null);
   const [sourceAssetFamilyCode, setSourceAssetFamilyCode] = useState<string | null>(null);
   const [isFetchingSourceFamily, setIsFetchingSourceFamily] = useState(false);
-  const [selectedSourceMediaAttribute, setSelectedSourceMediaAttribute] = useState<string | null>(null);
+  const [selectedSourceMediaAttribute, setSelectedSourceMediaAttribute] = useState<SelectedAssetAttribute | null>(null);
 
   // Destination asset family state
   const [assetFamilyCode, setAssetFamilyCode] = useState<string | null>(null);
   const [isFetchingFamily, setIsFetchingFamily] = useState(false);
-  const [selectedMediaAttribute, setSelectedMediaAttribute] = useState<string | null>(null);
+  const [selectedMediaAttribute, setSelectedMediaAttribute] = useState<SelectedAssetAttribute | null>(null);
 
   const { state: migrationState, preview, run, reset } = useMigration();
 
@@ -73,8 +73,12 @@ function App() {
     selectedSource?.locale,
     selectedSource?.scope,
     selectedDestination?.code,
-    selectedMediaAttribute,
-    selectedSourceMediaAttribute,
+    selectedMediaAttribute?.code,
+    selectedMediaAttribute?.locale,
+    selectedMediaAttribute?.scope,
+    selectedSourceMediaAttribute?.code,
+    selectedSourceMediaAttribute?.locale,
+    selectedSourceMediaAttribute?.scope,
   ]);
 
   const isSourceAssetCollection = sourceAttributeType === 'pim_catalog_asset_collection';
@@ -88,8 +92,8 @@ function App() {
   const canPreview =
     !!selectedSource?.code &&
     !!selectedDestination?.code &&
-    !!selectedMediaAttribute &&
-    (!isSourceAssetCollection || !!selectedSourceMediaAttribute);
+    !!selectedMediaAttribute?.code &&
+    (!isSourceAssetCollection || !!selectedSourceMediaAttribute?.code);
   const canMigrate = canPreview && migrationState.status === 'ready';
   const isBusy =
     migrationState.status === 'previewing' || migrationState.status === 'migrating';
@@ -108,7 +112,13 @@ function App() {
       assetFamilyCode,
       selectedMediaAttribute,
       isSourceAssetCollection && sourceAssetFamilyCode && selectedSourceMediaAttribute
-        ? { sourceAssetFamilyCode, sourceMediaAttrCode: selectedSourceMediaAttribute, isSameFamily: isSameFamilyMigration }
+        ? {
+            sourceAssetFamilyCode,
+            sourceMediaAttrCode: selectedSourceMediaAttribute.code,
+            sourceMediaLocale: selectedSourceMediaAttribute.locale,
+            sourceMediaScope: selectedSourceMediaAttribute.scope,
+            isSameFamily: isSameFamilyMigration,
+          }
         : undefined
     );
   };

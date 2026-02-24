@@ -1,5 +1,5 @@
 {
-  "position": "pim.product-grid.action-bar",
+  "position": "pim.activity.navigation.tab",
   "name": "asset_migration",
   "type": "sdk_script",
   "file": "dist/app.js",
@@ -7,7 +7,7 @@
     {
       "code": "pim_api",
       "type": "Bearer Token",
-      "value": "MjI1YmMyMzBiOTIzZTdlOWM4M2E5MmUwN2MyMDg4ZTg1ZWVmZWNiYTFiZTBkZGYxMTA1NGM1Njc1NGVkMDJhYw"
+      "value": "YzNiNzRkNThhMmIwMTYyYmJhMzU4MGYwYTUwMGZlOWQ0ODYxOWZlMDcwZDg3NzFmYmEyZGNkZTBlYTdkMGZlNg"
     }
   ],
   "configuration": {

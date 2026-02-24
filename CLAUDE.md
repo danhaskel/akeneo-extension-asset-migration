@@ -2,6 +2,36 @@
 
 This repository is an Akeneo UI extension front-end implemented with TypeScript, React and Vite. This document is a compact, actionable reference for frontend architecture, coding standards, API interaction patterns, testing, common pitfalls, and project terminology tailored for UI extension work.
 
+---
+
+## Akeneo Extension — Project-Specific Notes
+
+**Always consult the online Akeneo API documentation** before using or assuming any API behavior:
+- REST API reference: https://api.akeneo.com/api-reference.html
+- SDK method signatures: `common/global.d.ts` (source of truth for the `PIM.*` globals)
+
+### Deployment
+- Run `make update-dev` (dev build) or `make update` (prod build) to deploy.
+- Credentials and `custom_variables` are always included in the deploy payload — no flags needed.
+- The `pim_api` Bearer Token credential value and `pim_host` custom variable are injected automatically from `.env` (`API_TOKEN`, `PIM_HOST`) at deploy time by `common/create-extension.mjs` / `common/update-extension.mjs`. Re-deploy after token refresh (~1 hour) to keep the credential current.
+
+### Storage systems — critical distinction
+- **Product media files** (`/api/rest/v1/media-files/`) and **asset media files** (`/api/rest/v1/asset-media-files/`) are in **separate CDN buckets**. File codes/paths are NOT interchangeable across storage systems.
+- `image/file` → `asset_collection`: must download the product file and re-upload to asset storage.
+- `asset_collection` → `asset_collection`: both use asset media storage; the source asset's media file code can be referenced directly in the destination family — no download/re-upload needed.
+
+### CORS workaround
+- `PIM.api.external.call()` proxies all requests through the PIM server (server-to-server), eliminating CDN CORS issues that arise from browser-side redirects.
+- Requires a `credentials_code` referencing a stored Bearer Token credential (`pim_api`).
+- The `pim_host` base URL is available at runtime via `PIM.custom_variables['pim_host']` (set in `extension_configuration.json` and injected from `.env`).
+- `window.location.origin` is `null` in the extension iframe context — always use `PIM.custom_variables['pim_host']`.
+
+### Migration modes
+- **file/image → asset_collection**: download via `PIM.api.external.call()` + re-upload via `PIM.api.asset_media_file_v1.upload()`. See `upsertAsset()` in `src/hooks/useMigration.ts`.
+- **asset_collection → asset_collection**: look up source asset via `PIM.api.asset_v1.get()`, read its media file code, reference it directly in the destination asset upsert. See `upsertAssetsFromCollection()` in `src/hooks/useMigration.ts`.
+
+---
+
 ## Architecture (frontend focus)
 
 - Frontend: TypeScript, React (TSX), Vite, Tailwind CSS, PostCSS

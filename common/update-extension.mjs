@@ -28,6 +28,7 @@ const {
     PROJECT_PATH = process.cwd(),
 } = process.env;
 
+
 if (!PIM_HOST || !API_TOKEN) {
     console.error('Error: PIM_HOST and API_TOKEN must be set in your .env file.');
     process.exit(1);
@@ -38,12 +39,20 @@ if (!EXTENSION_UUID) {
     process.exit(1);
 }
 
-const withCredentials = process.argv.includes('--with-credentials');
-
 const configPath = path.join(PROJECT_PATH, 'extension_configuration.json');
 const configuration = JSON.parse(fs.readFileSync(configPath, 'utf8'));
 
-const payload = createExtensionPayload(PROJECT_PATH, withCredentials, configuration);
+// Inject live token and host from .env into the configuration before uploading
+if (API_TOKEN && configuration.credentials) {
+  configuration.credentials = configuration.credentials.map(c =>
+    c.code === 'pim_api' ? { ...c, value: API_TOKEN } : c
+  );
+}
+if (PIM_HOST && configuration.configuration?.custom_variables) {
+  configuration.configuration.custom_variables.pim_host = PIM_HOST;
+}
+
+const payload = createExtensionPayload(PROJECT_PATH, configuration);
 (async () => {
   try {
     console.log(`Updating extension with UUID: ${EXTENSION_UUID} on ${PIM_HOST}...`);

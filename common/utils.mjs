@@ -44,7 +44,7 @@ export const updateEnvVar = (key, value) => {
   }
 };
 
-export const createExtensionPayload = (projectPath, withCredentials, configuration) => {
+export const createExtensionPayload = (projectPath, configuration) => {
   const payload = new FormData();
   payload.append('name', configuration.name);
   payload.append('type', configuration.type);
@@ -58,7 +58,13 @@ export const createExtensionPayload = (projectPath, withCredentials, configurati
     }
   }
 
-  if (withCredentials && configuration.credentials) {
+  if (configuration.configuration.custom_variables) {
+    for (const [key, value] of Object.entries(configuration.configuration.custom_variables)) {
+      payload.append(`configuration[custom_variables][${key}]`, String(value));
+    }
+  }
+
+  if (configuration.credentials) {
     configuration.credentials.forEach((credential, index) => {
       payload.append(`credentials[${index}][code]`, credential.code);
       payload.append(`credentials[${index}][type]`, credential.type);

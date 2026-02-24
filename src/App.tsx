@@ -7,7 +7,7 @@ import MigrationProgress from './components/ui/migration_progress';
 import { useMigration } from './hooks/useMigration';
 
 const sourceSearch = {
-  type: [{ operator: 'IN', value: ['pim_catalog_image', 'pim_catalog_file'] }],
+  type: [{ operator: 'IN', value: ['pim_catalog_image', 'pim_catalog_file', 'pim_catalog_asset_collection'] }],
 };
 
 const destinationSearch = {
@@ -17,11 +17,39 @@ const destinationSearch = {
 function App() {
   const [selectedSource, setSelectedSource] = useState<SelectedAttribute | null>(null);
   const [selectedDestination, setSelectedDestination] = useState<SelectedAttribute | null>(null);
+
+  // Source asset family state (only relevant when source is pim_catalog_asset_collection)
+  const [sourceAttributeType, setSourceAttributeType] = useState<string | null>(null);
+  const [sourceAssetFamilyCode, setSourceAssetFamilyCode] = useState<string | null>(null);
+  const [isFetchingSourceFamily, setIsFetchingSourceFamily] = useState(false);
+  const [selectedSourceMediaAttribute, setSelectedSourceMediaAttribute] = useState<string | null>(null);
+
+  // Destination asset family state
   const [assetFamilyCode, setAssetFamilyCode] = useState<string | null>(null);
   const [isFetchingFamily, setIsFetchingFamily] = useState(false);
   const [selectedMediaAttribute, setSelectedMediaAttribute] = useState<string | null>(null);
 
   const { state: migrationState, preview, run, reset } = useMigration();
+
+  // Resolve source attribute type; for asset_collection also resolve its asset family
+  useEffect(() => {
+    setSourceAttributeType(null);
+    setSourceAssetFamilyCode(null);
+    setSelectedSourceMediaAttribute(null);
+    if (!selectedSource?.code) return;
+
+    setIsFetchingSourceFamily(true);
+    PIM.api.attribute_v1
+      .get({ code: selectedSource.code })
+      .then(attr => {
+        setSourceAttributeType(attr.type ?? null);
+        if (attr.type === 'pim_catalog_asset_collection') {
+          setSourceAssetFamilyCode(attr.referenceDataName ?? null);
+        }
+      })
+      .catch(() => setSourceAttributeType(null))
+      .finally(() => setIsFetchingSourceFamily(false));
+  }, [selectedSource?.code]);
 
   // Resolve the asset family code from the destination attribute's referenceDataName
   useEffect(() => {
@@ -46,10 +74,22 @@ function App() {
     selectedSource?.scope,
     selectedDestination?.code,
     selectedMediaAttribute,
+    selectedSourceMediaAttribute,
   ]);
 
+  const isSourceAssetCollection = sourceAttributeType === 'pim_catalog_asset_collection';
+
+  const isSameFamilyMigration =
+    isSourceAssetCollection &&
+    !!sourceAssetFamilyCode &&
+    !!assetFamilyCode &&
+    sourceAssetFamilyCode === assetFamilyCode;
+
   const canPreview =
-    !!selectedSource?.code && !!selectedDestination?.code && !!selectedMediaAttribute;
+    !!selectedSource?.code &&
+    !!selectedDestination?.code &&
+    !!selectedMediaAttribute &&
+    (!isSourceAssetCollection || !!selectedSourceMediaAttribute);
   const canMigrate = canPreview && migrationState.status === 'ready';
   const isBusy =
     migrationState.status === 'previewing' || migrationState.status === 'migrating';
@@ -62,7 +102,15 @@ function App() {
   const handleMigrate = () => {
     if (!selectedSource || !selectedDestination || !assetFamilyCode || !selectedMediaAttribute)
       return;
-    run(selectedSource, selectedDestination, assetFamilyCode, selectedMediaAttribute);
+    run(
+      selectedSource,
+      selectedDestination,
+      assetFamilyCode,
+      selectedMediaAttribute,
+      isSourceAssetCollection && sourceAssetFamilyCode && selectedSourceMediaAttribute
+        ? { sourceAssetFamilyCode, sourceMediaAttrCode: selectedSourceMediaAttribute, isSameFamily: isSameFamilyMigration }
+        : undefined
+    );
   };
 
   return (
@@ -73,10 +121,10 @@ function App() {
 
       <div className="mt-4">
         <Helper level="info">
-          This tool migrates image or file attribute values to assets linked via an asset collection
-          attribute. For a product to be migrated, it must belong to a family that includes{' '}
-          <strong>both</strong> the selected source attribute and the selected destination asset
-          collection attribute.
+          This tool migrates image, file, or asset collection attribute values to assets linked via
+          an asset collection attribute. For a product to be migrated, it must belong to a family
+          that includes <strong>both</strong> the selected source attribute and the selected
+          destination asset collection attribute.
         </Helper>
       </div>
 
@@ -88,8 +136,8 @@ function App() {
             <SectionTitle.Title>Source</SectionTitle.Title>
           </SectionTitle>
           <Helper level="info">
-            Select the image or file attribute to migrate from. Choose a locale and channel if the
-            attribute requires them.
+            Select the image, file, or asset collection attribute to migrate from. Choose a locale
+            and channel if the attribute requires them.
           </Helper>
           <AttributeSelection
             value={selectedSource}
@@ -97,6 +145,25 @@ function App() {
             placeholder="Select source attribute"
             onChange={setSelectedSource}
           />
+          {selectedSource && isSourceAssetCollection && (
+            <AssetAttributeSelector
+              assetFamilyCode={sourceAssetFamilyCode}
+              value={selectedSourceMediaAttribute}
+              onChange={setSelectedSourceMediaAttribute}
+            />
+          )}
+          {selectedSource && isSourceAssetCollection && !isFetchingSourceFamily && sourceAssetFamilyCode === null && (
+            <Helper level="warning">
+              This attribute has no linked asset family. Please select a valid asset collection
+              attribute.
+            </Helper>
+          )}
+          {isSameFamilyMigration && (
+            <Helper level="info">
+              Source and destination are in the same asset family. Existing assets will be updated
+              in place — no files will be downloaded or re-uploaded.
+            </Helper>
+          )}
         </div>
 
         {/* Destination */}

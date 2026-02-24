@@ -61,23 +61,11 @@ create: build get-token
 create-dev: build-dev get-token
 	@node common/create-extension.mjs
 
-create-with-credentials: build get-token
-	@node common/create-extension.mjs --with-credentials
-
-create-dev-with-credentials: build-dev get-token
-	@node common/create-extension.mjs --with-credentials
-
 update: build get-token
 	@node common/update-extension.mjs
 
 update-dev: build-dev get-token
 	@node common/update-extension.mjs
-
-update-with-credentials: build get-token
-	@node common/update-extension.mjs --with-credentials
-
-update-dev-with-credentials: build-dev get-token
-	@node common/update-extension.mjs --with-credentials
 
 watch:
 	@echo "Watching for changes and updating on file change..."

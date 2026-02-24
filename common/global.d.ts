@@ -1271,7 +1271,7 @@ declare interface ExecutionWorkflow {
     uuid: string;
 }
 
-declare type EXTENSION_VARIABLES = Record<string | number, string | number | Array<string | number>>;
+export declare type EXTENSION_VARIABLES = Record<string | number, string | number | Array<string | number>>;
 
 declare type externalGateway = {
     call: (requestParameters?: externalGatewayRequest) => Promise<any>;
@@ -3175,11 +3175,11 @@ declare interface WorkflowTasksList {
     items?: WorkflowTask[];
 }
 
+export { }
+
+
 declare global {
     namespace globalThis {
         var PIM: PIM_SDK;
     }
 }
-
-
-export { }

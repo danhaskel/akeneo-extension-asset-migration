@@ -1,0 +1,22 @@
+{
+  "position": "pim.activity.navigation.tab",
+  "name": "asset_migration",
+  "type": "sdk_script",
+  "file": "dist/app.js",
+  "credentials": [
+    {
+      "code": "pim_api",
+      "type": "Bearer Token",
+      "value": "YOUR_BEARER_TOKEN_HERE"
+    }
+  ],
+  "configuration": {
+    "default_label": "Asset Migration",
+    "labels": {
+      "en_US": "Asset Migration"
+    },
+    "custom_variables": {
+      "pim_host": "https://your-instance.cloud.akeneo.com"
+    }
+  }
+}

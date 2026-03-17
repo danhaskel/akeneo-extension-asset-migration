@@ -4,23 +4,16 @@ A UI extension for Akeneo PIM that lets you bulk-migrate product media into asse
 
 ## Overview
 
+> **Important:** Assets migrated using this tool will not display previews and are not accessible by any internal AI functions at this time.
+
 This extension adds a navigation tab inside Akeneo ("Asset Migration") where you can:
 
-1. Select a source attribute (`image`, `file`, or `asset_collection`)
+1. Select a source `asset_collection` attribute
 2. Select a destination `asset_collection` attribute and target asset family
 3. Preview the number of affected products
-4. Run the migration — the extension handles downloading, re-uploading, asset creation, and product patching
+4. Run the migration — the extension handles asset creation and product patching
 
 ## Migration Modes
-
-### `image` / `file` → `asset_collection`
-
-Product media files and asset media files live in **separate CDN buckets**. When the source is an image or file attribute, the extension must:
-
-1. Download the product media file via `PIM.api.external.call()` (proxied server-side to avoid CORS)
-2. Re-upload it to asset media storage via `PIM.api.asset_media_file_v1.upload()`
-3. Upsert an asset record referencing the new file code
-4. Patch the product to add the new asset code to the destination collection
 
 ### `asset_collection` → `asset_collection`
 
@@ -30,6 +23,10 @@ Both source and destination use asset media storage. The file code from the sour
 2. Looks up each source asset to get its media file code
 3. Upserts a destination asset referencing that file code
 4. Patches the product to link the destination asset (skipped for same-family migrations)
+
+### `image` / `file` → `asset_collection` _(temporarily disabled)_
+
+Cross-type migration is currently disabled. The code is preserved in `src/hooks/useMigration.ts` (commented out) and can be re-enabled when ready. When active, this mode downloads product media files and re-uploads them to asset storage — required because product and asset files live in separate CDN buckets.
 
 ## Setup
 
@@ -75,30 +72,7 @@ Re-deploy after token refresh (tokens expire ~every hour).
 
 ## Known Issues and Blockers
 
-### CORS blocks `Asset-media-file-code` response header (image/file migrations)
+The following issues apply to the cross-type (`image`/`file` → `asset_collection`) migration path, which is currently disabled:
 
-**Status:** Active bug — affects all `image`/`file` → `asset_collection` migrations.
-
-When uploading a file to `/api/rest/v1/asset-media-files`, the Akeneo SDK method `asset_media_file_v1.upload()` returns the new file code via the `Asset-media-file-code` response header. However, the extension runs inside a sandboxed iframe with a `null` origin. CORS prevents the browser from reading custom response headers from the PIM host, so the SDK throws an error like:
-
-```
-missing asset-media-file-code header
-```
-
-**Workaround (in place):** The extension computes a SHA-1 hash of the file content client-side and derives the expected file code using the same algorithm Akeneo uses server-side:
-
-```
-{sha1[0]}/{sha1[1]}/{sha1[2]}/{sha1[3]}/{sha1}_{filename}
-```
-
-This predicted code is used as a fallback when the header is unreadable. If the upload fails for any other reason (not a CORS/header issue), the error is re-thrown and the product is recorded as failed.
-
-**Limitation:** This workaround relies on Akeneo's internal file path convention remaining stable. If Akeneo changes its asset storage path format, the prediction will break and migrations will silently write incorrect file codes.
-
-### `external.call()` cannot be used for file uploads
-
-`PIM.api.external.call()` forces `Content-Type: application/json` on all requests, which causes the asset media file upload endpoint to reject the request with `400 Invalid json message received`. File uploads must go through `PIM.api.asset_media_file_v1.upload()` — which is what triggers the CORS header issue above.
-
-### No upload support via `external.call()` for multipart payloads
-
-There is currently no way to upload binary files through the external gateway proxy. The SDK's upload method is the only available path, and it is subject to the CORS limitation described above.
+- **CORS may block `Asset-media-file-code` response header** — the browser may be unable to read the header returned by `asset_media_file_v1.upload()` due to the sandboxed iframe `null` origin, causing uploads to fail with `missing asset-media-file-code header`.
+- **No binary upload support via `external.call()`** — `PIM.api.external.call()` only accepts a `string` body, so multipart/form-data uploads must go through `PIM.api.asset_media_file_v1.upload()` instead.

@@ -43,6 +43,8 @@ const INITIAL_STATE: MigrationState = {
 
 const BATCH_SIZE = 100;
 
+// The following helpers are used by the temporarily disabled cross-type migration path.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 /** Describe an unknown value concisely for logging. */
 function describeValue(v: unknown): string {
   if (v instanceof Blob) return `Blob(size=${v.size}, type="${v.type || 'none'}")`;
@@ -54,58 +56,11 @@ function describeValue(v: unknown): string {
 }
 
 /**
- * Pure-JS SHA-1 for sandboxed iframes where crypto.subtle is unavailable (null origin).
- * Implements FIPS 180-4 SHA-1.
- */
-function sha1Sync(buffer: ArrayBuffer): string {
-  const data = new Uint8Array(buffer);
-  const len = data.length;
-  const padded = new Uint8Array(Math.ceil((len + 9) / 64) * 64);
-  padded.set(data);
-  padded[len] = 0x80;
-  const view = new DataView(padded.buffer);
-  view.setUint32(padded.length - 4, (len * 8) >>> 0, false);
-
-  let h0 = 0x67452301, h1 = 0xEFCDAB89, h2 = 0x98BADCFE,
-      h3 = 0x10325476, h4 = 0xC3D2E1F0;
-  const w = new Uint32Array(80);
-
-  for (let off = 0; off < padded.length; off += 64) {
-    const blk = new DataView(padded.buffer, off, 64);
-    for (let i = 0; i < 16; i++) w[i] = blk.getUint32(i * 4, false);
-    for (let i = 16; i < 80; i++) {
-      const x = w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16];
-      w[i] = (x << 1) | (x >>> 31);
-    }
-    let a = h0, b = h1, c = h2, d = h3, e = h4;
-    for (let i = 0; i < 80; i++) {
-      let f: number, k: number;
-      if      (i < 20) { f = (b & c) | (~b & d);           k = 0x5A827999; }
-      else if (i < 40) { f = b ^ c ^ d;                    k = 0x6ED9EBA1; }
-      else if (i < 60) { f = (b & c) | (b & d) | (c & d); k = 0x8F1BBCDC; }
-      else             { f = b ^ c ^ d;                    k = 0xCA62C1D6; }
-      const t = (((a << 5) | (a >>> 27)) + f + e + k + w[i]) >>> 0;
-      e = d; d = c; c = (b << 30) | (b >>> 2); b = a; a = t;
-    }
-    h0 = (h0 + a) >>> 0; h1 = (h1 + b) >>> 0; h2 = (h2 + c) >>> 0;
-    h3 = (h3 + d) >>> 0; h4 = (h4 + e) >>> 0;
-  }
-  return [h0, h1, h2, h3, h4].map(n => n.toString(16).padStart(8, '0')).join('');
-}
-
-async function computeSha1(buffer: ArrayBuffer): Promise<string> {
-  if (typeof crypto !== 'undefined' && crypto.subtle) {
-    const h = await crypto.subtle.digest('SHA-1', buffer);
-    return Array.from(new Uint8Array(h)).map(b => b.toString(16).padStart(2, '0')).join('');
-  }
-  return sha1Sync(buffer);
-}
-
-/**
  * Derive a human-readable asset code from the source file path.
  * Akeneo stores files as "{40-char-hex-hash}_{originalName}.ext" inside
  * path segments, e.g. "4/e/1/f/4e1fe7b7..._banana.jfif".
  */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function generateAssetCode(filePath: string): string {
   const segment = filePath.split('/').pop() ?? filePath;
   const withoutHash = segment.replace(/^[0-9a-f]{40}_/, '');
@@ -118,6 +73,7 @@ function generateAssetCode(filePath: string): string {
   return sanitized || 'asset';
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function extractFilePath(
   product: PimProduct,
   attrCode: string,
@@ -153,137 +109,119 @@ function buildSearch(
   };
 }
 
-/**
+/*
+ * Cross-type migration (image/file → asset_collection) — temporarily disabled.
+ *
  * Phase 1 (image/file → asset_collection): download the product media file via the
  * external gateway proxy (avoids CORS on CDN redirect), re-upload it to asset media
  * storage (separate bucket), then upsert the asset record.
  * Returns [assetCode] so Phase 2 can link it to the product.
+ *
+ * async function upsertAsset(
+ *   product: PimProduct,
+ *   source: SelectedAttribute,
+ *   assetFamilyCode: string,
+ *   mediaAttr: SelectedAssetAttribute
+ * ): Promise<string[]> {
+ *   console.group(`[Migration:file] Product ${product.uuid}`);
+ *
+ *   // ── Step 1: extract file path ──────────────────────────────────────────────
+ *   const filePath = extractFilePath(product, source.code, source.locale, source.scope);
+ *   console.log('[1] Source attr:', source.code, '| locale:', source.locale ?? null, '| scope:', source.scope ?? null);
+ *   console.log('[1] Extracted file path:', filePath);
+ *   if (!filePath) {
+ *     console.error('[1] No file path found — skipping');
+ *     console.groupEnd();
+ *     throw new Error('Source attribute value is empty or not a file path');
+ *   }
+ *
+ *   const segment = filePath.split('/').pop() ?? filePath;
+ *   const filename = segment.replace(/^[0-9a-f]{40}_/, '');
+ *   console.log('[1] Derived filename:', filename);
+ *
+ *   // ── Step 2: download via external gateway proxy ────────────────────────────
+ *   // Must use external.call — product_media_file_v1.download() goes through the
+ *   // SDK's /sdk/api/ proxy which has CORS issues from the extension iframe.
+ *   const pimHost = String(PIM.custom_variables['pim_host'] ?? '');
+ *   const downloadUrl = `${pimHost}/api/rest/v1/media-files/${filePath}/download`;
+ *   console.log('[2] Calling external.call — GET', downloadUrl);
+ *
+ *   let raw: unknown;
+ *   try {
+ *     raw = await PIM.api.external.call({
+ *       method: 'GET',
+ *       url: downloadUrl,
+ *       credentials_code: 'pim_api',
+ *     });
+ *     console.log('[2] external.call response:', describeValue(raw));
+ *     console.log('[2] Raw value (expand to inspect):', raw);
+ *   } catch (downloadErr: any) {
+ *     console.error('[2] external.call FAILED:', downloadErr?.message ?? downloadErr);
+ *     console.groupEnd();
+ *     throw downloadErr;
+ *   }
+ *
+ *   const blob: Blob = raw instanceof Blob
+ *     ? raw
+ *     : new Blob([raw instanceof ArrayBuffer ? raw : JSON.stringify(raw)]);
+ *   console.log('[2] Blob:', describeValue(blob));
+ *
+ *   // ── Step 3: upload to asset media file storage ────────────────────────────
+ *   // external.call() cannot be used for uploads — the proxy overrides Content-Type
+ *   // to application/json regardless of explicit headers, causing a 400 rejection.
+ *   // Use the SDK's upload() method instead. If CORS blocks the Asset-media-file-code
+ *   // response header, the SDK throws and the product is recorded as failed.
+ *   console.log('[3] Calling asset_media_file_v1.upload — filename:', filename, '| blob:', describeValue(blob));
+ *
+ *   let assetFileCode: string;
+ *   try {
+ *     const uploadResult = await PIM.api.asset_media_file_v1.upload({ file: blob, filename });
+ *     assetFileCode = uploadResult.code;
+ *     console.log('[3] Upload success — SDK returned code:', assetFileCode);
+ *   } catch (uploadErr: any) {
+ *     console.error('[3] asset_media_file_v1.upload FAILED:', uploadErr?.message ?? uploadErr);
+ *     console.groupEnd();
+ *     throw uploadErr;
+ *   }
+ *
+ *   // ── Step 4: upsert the asset record ───────────────────────────────────────
+ *   const assetCode = generateAssetCode(filePath);
+ *   const assetPayload = {
+ *     assetFamilyCode,
+ *     asset: {
+ *       code: assetCode,
+ *       values: {
+ *         [mediaAttr.code]: [{
+ *           locale: mediaAttr.locale ?? null,
+ *           channel: mediaAttr.scope ?? null,
+ *           data: assetFileCode,
+ *         }],
+ *       },
+ *     },
+ *   };
+ *   console.log('[4] Calling asset_v1.upsert — family:', assetFamilyCode, '| assetCode:', assetCode,
+ *     '| mediaAttr:', mediaAttr.code, '| fileCode:', assetFileCode,
+ *     '| locale:', mediaAttr.locale ?? null, '| channel:', mediaAttr.scope ?? null);
+ *
+ *   try {
+ *     await PIM.api.asset_v1.upsert(assetPayload);
+ *     console.log('[4] Asset upserted successfully');
+ *   } catch (err: any) {
+ *     const msg: string = err?.message ?? String(err);
+ *     if (/already exists/i.test(msg) || err?.status === 409) {
+ *       console.warn('[4] Asset already exists — treating as success');
+ *       console.groupEnd();
+ *       return [assetCode];
+ *     }
+ *     console.error('[4] asset_v1.upsert FAILED:', msg);
+ *     console.groupEnd();
+ *     throw err;
+ *   }
+ *
+ *   console.groupEnd();
+ *   return [assetCode];
+ * }
  */
-async function upsertAsset(
-  product: PimProduct,
-  source: SelectedAttribute,
-  assetFamilyCode: string,
-  mediaAttr: SelectedAssetAttribute
-): Promise<string[]> {
-  console.group(`[Migration:file] Product ${product.uuid}`);
-
-  // ── Step 1: extract file path ──────────────────────────────────────────────
-  const filePath = extractFilePath(product, source.code, source.locale, source.scope);
-  console.log('[1] Source attr:', source.code, '| locale:', source.locale ?? null, '| scope:', source.scope ?? null);
-  console.log('[1] Extracted file path:', filePath);
-  if (!filePath) {
-    console.error('[1] No file path found — skipping');
-    console.groupEnd();
-    throw new Error('Source attribute value is empty or not a file path');
-  }
-
-  const segment = filePath.split('/').pop() ?? filePath;
-  const filename = segment.replace(/^[0-9a-f]{40}_/, '');
-  console.log('[1] Derived filename:', filename);
-
-  // ── Step 2: download via external gateway proxy ────────────────────────────
-  // Must use external.call — product_media_file_v1.download() goes through the
-  // SDK's /sdk/api/ proxy which has CORS issues from the extension iframe.
-  const pimHost = String(PIM.custom_variables['pim_host'] ?? '');
-  const downloadUrl = `${pimHost}/api/rest/v1/media-files/${filePath}/download`;
-  console.log('[2] Calling external.call — GET', downloadUrl);
-
-  let raw: unknown;
-  try {
-    raw = await PIM.api.external.call({
-      method: 'GET',
-      url: downloadUrl,
-      credentials_code: 'pim_api',
-    });
-    console.log('[2] external.call response:', describeValue(raw));
-    console.log('[2] Raw value (expand to inspect):', raw);
-  } catch (downloadErr: any) {
-    console.error('[2] external.call FAILED:', downloadErr?.message ?? downloadErr);
-    console.groupEnd();
-    throw downloadErr;
-  }
-
-  const blob: Blob = raw instanceof Blob
-    ? raw
-    : new Blob([raw instanceof ArrayBuffer ? raw : JSON.stringify(raw)]);
-  console.log('[2] Blob:', describeValue(blob));
-
-  // ── Step 3: upload to asset media file storage ────────────────────────────
-  // external.call cannot be used for uploads — the gateway forces Content-Type:
-  // application/json, which makes POST /api/rest/v1/asset-media-files reject with
-  // 400 "Invalid json message received". We use the SDK's upload() instead.
-  //
-  // CORS workaround for the response header: Akeneo generates storage paths via
-  // sha1_file() of the file content: {sha1[0]}/{sha1[1]}/{sha1[2]}/{sha1[3]}/{sha1}_{name}
-  // We compute the same SHA-1 client-side so we can derive the code even when
-  // CORS prevents reading the "Asset-media-file-code" response header.
-  const blobBuffer = await blob.arrayBuffer();
-  const sha1 = await computeSha1(blobBuffer);
-  const predictedCode = `${sha1[0]}/${sha1[1]}/${sha1[2]}/${sha1[3]}/${sha1}_${filename}`;
-  console.log('[3] SHA-1 predicted file code:', predictedCode);
-
-  console.log('[3] Calling asset_media_file_v1.upload — filename:', filename, '| blob:', describeValue(blob));
-
-  let assetFileCode: string = predictedCode;
-  try {
-    const uploadResult = await PIM.api.asset_media_file_v1.upload({ file: blob, filename });
-    assetFileCode = uploadResult.code;
-    console.log('[3] Upload success — SDK returned code:', assetFileCode);
-    if (assetFileCode !== predictedCode) {
-      console.warn('[3] Returned code differs from SHA-1 prediction — using returned code.',
-        'predicted:', predictedCode, '| actual:', assetFileCode);
-    } else {
-      console.log('[3] SHA-1 prediction matched returned code ✓');
-    }
-  } catch (uploadErr: any) {
-    if (/missing asset-media-file-code header/i.test(uploadErr?.message ?? '')) {
-      // Upload succeeded (HTTP 201) but CORS blocks reading the response header.
-      // Fall back to the SHA-1 derived code — Akeneo computes the same hash server-side.
-      console.warn('[3] CORS: Asset-media-file-code header unreadable. Using SHA-1 derived code:', assetFileCode);
-    } else {
-      console.error('[3] asset_media_file_v1.upload FAILED:', uploadErr?.message ?? uploadErr);
-      console.groupEnd();
-      throw uploadErr;
-    }
-  }
-
-  // ── Step 4: upsert the asset record ───────────────────────────────────────
-  const assetCode = generateAssetCode(filePath);
-  const assetPayload = {
-    assetFamilyCode,
-    asset: {
-      code: assetCode,
-      values: {
-        [mediaAttr.code]: [{
-          locale: mediaAttr.locale ?? null,
-          channel: mediaAttr.scope ?? null,
-          data: assetFileCode,
-        }],
-      },
-    },
-  };
-  console.log('[4] Calling asset_v1.upsert — family:', assetFamilyCode, '| assetCode:', assetCode,
-    '| mediaAttr:', mediaAttr.code, '| fileCode:', assetFileCode,
-    '| locale:', mediaAttr.locale ?? null, '| channel:', mediaAttr.scope ?? null);
-
-  try {
-    await PIM.api.asset_v1.upsert(assetPayload);
-    console.log('[4] Asset upserted successfully');
-  } catch (err: any) {
-    const msg: string = err?.message ?? String(err);
-    if (/already exists/i.test(msg) || err?.status === 409) {
-      console.warn('[4] Asset already exists — treating as success');
-      console.groupEnd();
-      return [assetCode];
-    }
-    console.error('[4] asset_v1.upsert FAILED:', msg);
-    console.groupEnd();
-    throw err;
-  }
-
-  console.groupEnd();
-  return [assetCode];
-}
 
 /**
  * Phase 1 (asset_collection → asset_collection): look up each source asset to get
@@ -532,7 +470,8 @@ export function useMigration() {
         items.map(product =>
           sourceContext
             ? upsertAssetsFromCollection(product, source, assetFamilyCode, mediaAttr, sourceContext)
-            : upsertAsset(product, source, assetFamilyCode, mediaAttr)
+            // Cross-type migration (image/file → asset_collection) is temporarily disabled.
+            : Promise.reject(new Error('Cross-type migration (image/file → asset_collection) is not supported at this time'))
         )
       );
 

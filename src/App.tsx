@@ -6,8 +6,12 @@ import AssetAttributeSelector, { SelectedAssetAttribute } from './components/ui/
 import MigrationProgress from './components/ui/migration_progress';
 import { useMigration } from './hooks/useMigration';
 
+// Cross-type migration (image/file → asset_collection) is temporarily disabled.
+// const sourceSearch = {
+//   type: [{ operator: 'IN', value: ['pim_catalog_image', 'pim_catalog_file', 'pim_catalog_asset_collection'] }],
+// };
 const sourceSearch = {
-  type: [{ operator: 'IN', value: ['pim_catalog_image', 'pim_catalog_file', 'pim_catalog_asset_collection'] }],
+  type: [{ operator: 'IN', value: ['pim_catalog_asset_collection'] }],
 };
 
 const destinationSearch = {
@@ -130,9 +134,16 @@ function App() {
       </SectionTitle>
 
       <div className="mt-4">
+        <Helper level="warning">
+          <strong>Important:</strong> Assets migrated using this tool will not display previews
+          and are not accessible by any internal AI functions at this time.
+        </Helper>
+      </div>
+
+      <div className="mt-4">
         <Helper level="info">
-          This tool migrates image, file, or asset collection attribute values to assets linked via
-          an asset collection attribute. For a product to be migrated, it must belong to a family
+          This tool migrates asset collection attribute values to assets linked via another
+          asset collection attribute. For a product to be migrated, it must belong to a family
           that includes <strong>both</strong> the selected source attribute and the selected
           destination asset collection attribute.
         </Helper>
@@ -146,8 +157,8 @@ function App() {
             <SectionTitle.Title>Source</SectionTitle.Title>
           </SectionTitle>
           <Helper level="info">
-            Select the image, file, or asset collection attribute to migrate from. Choose a locale
-            and channel if the attribute requires them.
+            Select the asset collection attribute to migrate from. Choose a locale and channel if
+            the attribute requires them.
           </Helper>
           <AttributeSelection
             value={selectedSource}

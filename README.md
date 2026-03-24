@@ -2,6 +2,8 @@
 
 A UI extension for Akeneo PIM that lets you bulk-migrate product media into asset collections directly from the PIM interface. Built with TypeScript, React, and Vite.
 
+> **Disclaimer:** This is an unofficial, community-built extension and is not affiliated with, endorsed by, or maintained by Akeneo SAS. It is provided as-is with no warranty or support. Use it at your own risk. You are expected to fork and maintain your own copy of this code — no ongoing updates or bug fixes are guaranteed.
+
 ## Overview
 
 > **Important:** Assets migrated using this tool will not display previews and are not accessible by any internal AI functions at this time.
